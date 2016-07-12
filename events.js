@@ -5,11 +5,13 @@ const async = require('async');
 const Datastore = require('nedb');
 const chalk = require('chalk');
 const nodemailer = require('nodemailer');
+const fs = require('fs');
 
 //db laden
 db = {};
 db.users = new Datastore('db/users.db');
 db.events = new Datastore('db/events.db');
+db.admin = new Datastore('db/admin.db')
 
 db.users.loadDatabase();
 db.events.loadDatabase();
@@ -17,6 +19,11 @@ db.events.loadDatabase();
 //servervariablen
 const host = '0.0.0.0';
 const port = 3002;
+const admin = process.argv[2];
+const password = process.argv[3];
+
+//array where admin-logins are stored
+var tokenArray = [];
 
 /*------------------------NEDB-FUNKTIONEN----------------------*/
 //event in db einfügen
@@ -192,32 +199,32 @@ var eventSignoutUser = function(event, user, callback) {
 
     //5.
     //wenn platz frei
-    if(freePlacesDifference > 0) {
-      var participantToInvite = null;
-      //teilnehmer durchlaufen
-      for(var i=0; i<event.participants.length; i++) {
-        //wenn teilnehmer keine email erhalten hat und kein anderer vorhanden ist oder timestamp niedriger, participant einladen
-        if(event.participants[i].inviteSent == false && participantToInvite == null) {
-          participantToInvite = i;
-        } else if (event.participants[i].inviteSent == false && event.participants[i].timestamp < participantToInvite.timestamp) {
-          participantToInvite = i;
+    if (freePlacesDifference > 0) {
+        var participantToInvite = null;
+        //teilnehmer durchlaufen
+        for (var i = 0; i < event.participants.length; i++) {
+            //wenn teilnehmer keine email erhalten hat und kein anderer vorhanden ist oder timestamp niedriger, participant einladen
+            if (event.participants[i].inviteSent == false && participantToInvite == null) {
+                participantToInvite = i;
+            } else if (event.participants[i].inviteSent == false && event.participants[i].timestamp < participantToInvite.timestamp) {
+                participantToInvite = i;
+            }
         }
-      }
-      //wenn teilnehmer zum einladen vorhanden, email senden und als eingeladen markieren
-      if(participantToInvite != null) {
-      sendMail(event.participants[participantToInvite], event['_id'], 4);
-      event.participants[participantToInvite].inviteSent = true;
+        //wenn teilnehmer zum einladen vorhanden, email senden und als eingeladen markieren
+        if (participantToInvite != null) {
+            sendMail(event.participants[participantToInvite], event['_id'], 4);
+            event.participants[participantToInvite].inviteSent = true;
 
-      //event in db updaten
-      db.events.update({
-          _id: event['_id']
-      }, event, {
-          upsert: true
-      }, function(err, res) {
-          callback(err, res);
-      });
+            //event in db updaten
+            db.events.update({
+                _id: event['_id']
+            }, event, {
+                upsert: true
+            }, function(err, res) {
+                callback(err, res);
+            });
 
-    }
+        }
     }
 }
 
@@ -244,7 +251,7 @@ var sendMail = function(userId, eventId, mailType) {
             switch (mailType) {
                 case 1:
                     //verififizierungs-link
-                    var verifyLink = "192.168.0.52:3002/verifySignup/&userid="+user['_id']+"&eventid="+event['_id'];
+                    var verifyLink = "192.168.0.52:3002/verifySignup/&userid=" + user['_id'] + "&eventid=" + event['_id'];
                     //bestätigung eventteilnahme
                     var mailOptions = {
                         from: '"Chaostreff Flensburg" <events@chaostreff-flensburg.de>', // sender address
@@ -302,6 +309,41 @@ var sendMail = function(userId, eventId, mailType) {
     });
 }
 
+/*----------------------TOKEN-MANGAER---------------------------*/
+
+//definition token
+var token = function(url) {
+    var newToken = {
+        url: url,
+        id: Math.floor((Math.random() * Number.MAX_SAFE_INTEGER/2-1) + 1),
+        timestamp: new Date()
+    }
+    return newToken;
+}
+
+//neues token erstellen
+var createToken = function(url) {
+    //create token
+    var newToken = token(url);
+    //globally save new token in array
+    tokenArray.push(newToken);
+    //return id
+    return newToken;
+}
+
+//query token by id and url
+var getToken = function(id, url) {
+    for (var i = 0; i < tokenArray.length; i++) {
+        if (id == tokenArray[i].id && url == tokenArray[i].url) {
+            //found token
+            return tokenArray[i];
+            break;
+        }
+    }
+    //found nothing
+    return null;
+}
+
 /*----------------------HTTP-DISPATCHER------------------------*/
 
 //emaillinks (verifizierung, signout) verarbeiten
@@ -341,7 +383,7 @@ var processMailLinks = function(req, res) {
             break;
 
         case "/verifySignup":
-        //teilnahme des user am event verifizieren
+            //teilnahme des user am event verifizieren
             console.log(chalk.blue("verifySignup"));
             userId = body.userid;
             eventId = body.eventid;
@@ -369,12 +411,45 @@ var processMailLinks = function(req, res) {
             });
             break;
 
-            default:
+        default:
             console.log(chalk.red("URL nicht erkannt"));
     }
 }
 
 var handleRequest = function(req, res) {
+    // When dealing with CORS (Cross-Origin Resource Sharing)
+    // reqs, the client should pass-through its origin (the
+    // reqing domain). We should either echo that or use *
+    // if the origin was not passed.
+    var origin = (req.headers.origin || "*");
+
+    // Check to see if this is a security check by the browser to
+    // test the availability of the API for the client. If the
+    // method is OPTIONS, the browser is check to see to see what
+    // HTTP methods (and properties) have been granted to the
+    // client.
+    if (req.method.toUpperCase() === "OPTIONS") {
+        console.log("Preflight Cors Request");
+        console.log(origin);
+        // Echo back the Origin (calling domain) so that the
+        // client is granted access to make subsequent reqs
+        // to the API.
+        res.writeHead(
+            "204",
+            "No Content", {
+                "access-control-allow-origin": origin,
+                "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
+                "access-control-allow-headers": "content-type, accept, access-control-allow-credentials, accept",
+                "Access-Control-Allow-Credentials": "true",
+                "access-control-max-age": 10, // Seconds.
+                "content-length": 0
+            }
+        );
+
+        // End the res - we're not sending back any content.
+        return (res.end());
+    }
+
     //dispatcher einrichten
     try {
         console.log(req.url);
@@ -399,13 +474,15 @@ var handleRequest = function(req, res) {
             if (err == null) {
                 //bestätigung senden
                 res.writeHead(200, {
-                    'Content-type': 'text/HTML'
+                    'Content-type': 'application/JSON ',
+                    "access-control-allow-origin": origin
                 });
                 res.end(JSON.stringify(events));
             } else {
                 //error senden
                 res.writeHead(404, {
-                    'Content-type': 'text/HTML'
+                    'Content-type': 'text/HTML',
+                    "access-control-allow-origin": origin
                 });
                 res.end(err);
             }
@@ -430,13 +507,15 @@ var handleRequest = function(req, res) {
             if (err == null) {
                 //bestätigung senden
                 res.writeHead(200, {
-                    'Content-type': 'text/HTML'
+                    'Content-type': 'text/HTML',
+                    "access-control-allow-origin": origin
                 });
                 res.end();
             } else {
                 //error senden
                 res.writeHead(404, {
-                    'Content-type': 'text/HTML'
+                    'Content-type': 'text/HTML',
+                    "access-control-allow-origin": origin
                 });
                 res.end(err);
             }
@@ -470,13 +549,15 @@ var handleRequest = function(req, res) {
                         console.log(chalk.green("User signed up"));
                         //bestätigung senden
                         res.writeHead(200, {
-                            'Content-type': 'text/HTML'
+                            'Content-type': 'text/HTML',
+                            "access-control-allow-origin": origin
                         });
                         res.end();
                     } else {
                         //error senden
                         res.writeHead(404, {
-                            'Content-type': 'text/HTML'
+                            'Content-type': 'text/HTML',
+                            "access-control-allow-origin": origin
                         });
                         res.end(error);
                     }
@@ -485,15 +566,55 @@ var handleRequest = function(req, res) {
                 console.log(chalk.red("User has signed up before"));
                 //error senden
                 res.writeHead(404, {
-                    'Content-type': 'text/HTML'
+                    'Content-type': 'text/HTML',
+                    "access-control-allow-origin": origin
                 });
                 res.end("User bereits vorhanden");
             }
         });
     });
 
+    //login as an admin
+    dispatcher.onPost("/adminSignin", function(req, res) {
+        console.log(chalk.blue("adminSignin()"));
+        var body = JSON.parse(req.body);
+
+        var name = body.name;
+        var pw = body.password;
+        var url = req.headers.origin;
+
+        if (name == admin && pw == password) { //erfolgreiche anmeldung
+            //create token for client
+            var token = createToken(url);
+
+            console.dir(token);
+
+            res.writeHead(200, {
+                'Set-Cookie': 'id='+token.id,
+                'Content-Type': 'text/plain',
+                'access-control-allow-credentials': 'true',
+                "access-control-allow-origin": origin
+            });
+            var html = fs.readFileSync("admin.html");
+            res.end(html);
+        } else { //fehlerhafte anmeldung
+            //error senden
+            res.writeHead(404, {
+                'Content-type': 'text/HTML',
+                "access-control-allow-origin": origin
+            });
+            res.end();
+        }
+    });
+
     dispatcher.onPost("/createEvent", function(req, res) {
         var body = JSON.parse(req.body);
+
+        var id = body.id;
+        var url = req.headers.origin;
+
+        var token = getToken(id, url);
+        console.log(token);
 
         //definition event
         var newEvent = {
@@ -505,37 +626,52 @@ var handleRequest = function(req, res) {
             participants: [],
         }
 
-        dbCreateEvent(newEvent, function(err, doc) {
-            //server reply
-            if (err == null) {
-                //bestätigung senden
-                res.writeHead(200, {
-                    'Content-type': 'text/HTML'
-                });
-                res.end();
-            } else {
-                //error senden
-                res.writeHead(404, {
-                    'Content-type': 'text/HTML'
-                });
-                res.end(err);
-            }
-        });
+        //TODO check admin credentials
+        if (token != null) { //adminlogin successful
+            console.log(chalk.green("Admin confirmed"));
+
+            dbCreateEvent(newEvent, function(err, doc) {
+                //server reply
+                if (err == null) {
+                    //bestätigung senden
+                    res.writeHead(200, {
+                        'Content-type': 'text/HTML',
+                        "access-control-allow-origin": origin
+                    });
+                    res.end();
+                } else {
+                    //error senden
+                    res.writeHead(404, {
+                        'Content-type': 'text/HTML',
+                        "access-control-allow-origin": origin
+                    });
+                    res.end(err);
+                }
+            });
+        } else { //adminlogin failed
+            //error senden
+            res.writeHead(404, {
+                'Content-type': 'text/HTML',
+                "access-control-allow-origin": origin
+            });
+            res.end("Adminlogin failed");
+        }
     });
 }
 
 dispatcher.beforeFilter(/\//, function(req, res, chain) { //any url
-    console.log("Before filter");
+    //console.log("Before filter");
     chain.next(req, res, chain);
 });
 
 dispatcher.afterFilter(/\//, function(req, res, chain) { //any url
-    console.log("After filter");
+    //console.log("After filter");
     chain.next(req, res, chain);
 });
 
 dispatcher.onError(function(req, res) {
     res.writeHead(404);
+    res.end();
 });
 
 
